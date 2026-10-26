@@ -9,13 +9,8 @@
 #include <semphr.h>
 #include <queue.h>
 
-
-#include <stdio.h>
-#include <string.h> 
 #include "pico/stdlib.h"
-#include "hardware/gpio.h"
-#include "hardware/timer.h"
-#include "hardware/irq.h"
+#include <stdio.h>
 
 const int BTN_PIN_R = 28;
 const int BTN_PIN_Y = 21;
@@ -23,24 +18,117 @@ const int BTN_PIN_Y = 21;
 const int LED_PIN_R = 5;
 const int LED_PIN_Y = 10;
 
+QueueHandle_t xQueueBtn;
 
-void btn_task(void* p) {
+SemaphoreHandle_t xSemaphoreLedR;
+SemaphoreHandle_t xSemaphoreLedY;
 
-    while (true) {
-
+void btn_callback(uint gpio, uint32_t events) {
+    if (events == 0x4) { // fall edge
+        xQueueSendFromISR(xQueueBtn, &gpio, 0);
     }
 }
 
+void btn_task(void *p) {
+    gpio_init(BTN_PIN_R);
+    gpio_set_dir(BTN_PIN_R, GPIO_IN);
+    gpio_pull_up(BTN_PIN_R);
 
+    gpio_init(BTN_PIN_Y);
+    gpio_set_dir(BTN_PIN_Y, GPIO_IN);
+    gpio_pull_up(BTN_PIN_Y);
+
+    gpio_set_irq_enabled_with_callback(
+        BTN_PIN_R,
+        GPIO_IRQ_EDGE_FALL,
+        true,
+        &btn_callback
+    );
+
+    gpio_set_irq_enabled_with_callback(
+        BTN_PIN_Y,
+        GPIO_IRQ_EDGE_FALL,
+        true,
+        &btn_callback
+    );
+
+    uint gpio;
+
+    while (true) {
+        if (xQueueReceive(xQueueBtn, &gpio, pdMS_TO_TICKS(500))) {
+            if (gpio == BTN_PIN_R) {
+                xSemaphoreGive(xSemaphoreLedR);
+            }
+
+            if (gpio == BTN_PIN_Y) {
+                xSemaphoreGive(xSemaphoreLedY);
+            }
+        }
+    }
+}
+
+void led_r_task(void *p) {
+    gpio_init(LED_PIN_R);
+    gpio_set_dir(LED_PIN_R, GPIO_OUT);
+    gpio_put(LED_PIN_R, 0);
+
+    int piscar = 0;
+    int estado = 0;
+
+    while (true) {
+        if (xSemaphoreTake(xSemaphoreLedR, 0) == pdTRUE) {
+            piscar = !piscar;
+        }
+
+        if (piscar) {
+            estado = !estado;
+        } else {
+            estado = 0;
+        }
+
+        gpio_put(LED_PIN_R, estado);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void led_y_task(void *p) {
+    gpio_init(LED_PIN_Y);
+    gpio_set_dir(LED_PIN_Y, GPIO_OUT);
+    gpio_put(LED_PIN_Y, 0);
+
+    int piscar = 0;
+    int estado = 0;
+
+    while (true) {
+        if (xSemaphoreTake(xSemaphoreLedY, 0) == pdTRUE) {
+            piscar = !piscar;
+        }
+
+        if (piscar) {
+            estado = !estado;
+        } else {
+            estado = 0;
+        }
+
+        gpio_put(LED_PIN_Y, estado);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
 
 int main() {
     stdio_init_all();
 
-    xTaskCreate(btn_task, "BTN_Task 1", 256, NULL, 1, NULL);
+    xQueueBtn = xQueueCreate(32, sizeof(uint));
+
+    xSemaphoreLedR = xSemaphoreCreateBinary();
+    xSemaphoreLedY = xSemaphoreCreateBinary();
+
+    xTaskCreate(btn_task, "BTN_Task", 256, NULL, 1, NULL);
+    xTaskCreate(led_r_task, "LED_Task R", 256, NULL, 1, NULL);
+    xTaskCreate(led_y_task, "LED_Task Y", 256, NULL, 1, NULL);
 
     vTaskStartScheduler();
 
-    while(1){}
-
-    return 0;
+    while (true)
+        ;
 }
